@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kyutai Pocket TTS Local</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffaf4;
+      --line: #d7c7b2;
+      --text: #1f1b16;
+      --muted: #6b6257;
+      --accent: #8d4e2f;
+      --accent-2: #d9a15f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top right, rgba(217,161,95,.24), transparent 28%),
+        linear-gradient(180deg, #f8f3ec 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    .hero, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(65, 41, 21, 0.06);
+    }
+    .hero { margin-bottom: 16px; }
+    h1, h2, h3, p { margin-top: 0; }
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: 1.4fr .9fr;
+    }
+    .stack { display: grid; gap: 16px; }
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }
+    textarea, select, input[type="text"], input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      background: var(--accent);
+      color: #fffaf4;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .65; cursor: wait; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    ul { margin: 0; padding-left: 18px; }
+    audio { width: 100%; margin-top: 10px; }
+    code {
+      background: rgba(141,78,47,.08);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    .status { min-height: 20px; color: var(--accent); }
+    @media (max-width: 760px) {
+      .grid, .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Kyutai Pocket TTS</h1>
+      <p class="muted">Simple local CPU UI for the upstream <code>pocket-tts</code> package. Built-in voices, custom voice URLs, and voice cloning from an uploaded sample are supported.</p>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Generate</h2>
+        <label for="text">Text</label>
+        <textarea id="text">Hello from Kyutai Pocket TTS running locally on CPU.</textarea>
+
+        <div class="row">
+          <div>
+            <label for="voice">Built-in or custom voice</label>
+            <select id="voice"></select>
+          </div>
+          <div>
+            <label for="voiceUrl">Custom voice URL override</label>
+            <input id="voiceUrl" type="text" placeholder="hf://... or https://...">
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label for="voiceFile">Voice cloning sample</label>
+          <input id="voiceFile" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a">
+          <p class="muted">If you upload a file, it overrides the voice selector and URL field for this request.</p>
+        </div>
+
+        <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+          <button id="generateBtn">Generate audio</button>
+          <a id="downloadLink" class="muted" hidden download="generated_speech.wav">Download result</a>
+        </div>
+
+        <p id="status" class="status"></p>
+        <audio id="audio" controls hidden></audio>
+      </section>
+
+      <div class="stack">
+        <section class="panel">
+          <h3>Voices</h3>
+          <div id="voices" class="chips"></div>
+        </section>
+
+        <section class="panel">
+          <h3>Endpoints</h3>
+          <ul id="endpoints"></ul>
+        </section>
+
+        <section class="panel">
+          <h3>Features</h3>
+          <ul id="features"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const voiceSelect = document.getElementById("voice");
+    const voiceUrlInput = document.getElementById("voiceUrl");
+    const voiceFileInput = document.getElementById("voiceFile");
+    const generateBtn = document.getElementById("generateBtn");
+    const statusNode = document.getElementById("status");
+    const audioNode = document.getElementById("audio");
+    const downloadLink = document.getElementById("downloadLink");
+
+    async function loadInfo() {
+      const res = await fetch("/api/info");
+      const data = await res.json();
+
+      voiceSelect.innerHTML = "";
+      for (const voice of data.built_in_voices) {
+        const option = document.createElement("option");
+        option.value = voice;
+        option.textContent = voice;
+        if (voice === data.default_voice) option.selected = true;
+        voiceSelect.appendChild(option);
+      }
+
+      document.getElementById("voices").innerHTML = data.built_in_voices
+        .map((voice) => `<span class="chip">${voice}</span>`).join("");
+
+      document.getElementById("endpoints").innerHTML = Object.entries(data.endpoints)
+        .map(([path, desc]) => `<li><code>${path}</code> ${desc}</li>`).join("");
+
+      document.getElementById("features").innerHTML = data.features
+        .map((feature) => `<li>${feature}</li>`).join("");
+    }
+
+    async function generateAudio() {
+      statusNode.textContent = "Generating...";
+      generateBtn.disabled = true;
+      audioNode.hidden = true;
+      downloadLink.hidden = true;
+
+      const formData = new FormData();
+      formData.append("text", document.getElementById("text").value);
+
+      const file = voiceFileInput.files[0];
+      const voiceUrl = voiceUrlInput.value.trim();
+      if (file) {
+        formData.append("voice_wav", file);
+      } else if (voiceUrl) {
+        formData.append("voice", voiceUrl);
+      } else {
+        formData.append("voice", voiceSelect.value);
+      }
+
+      try {
+        const res = await fetch("/tts", { method: "POST", body: formData });
+        if (!res.ok) {
+          const detail = await res.text();
+          throw new Error(detail || "Request failed");
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        audioNode.src = url;
+        audioNode.hidden = false;
+        downloadLink.href = url;
+        downloadLink.hidden = false;
+        statusNode.textContent = "Done.";
+      } catch (error) {
+        statusNode.textContent = `Error: ${error.message}`;
+      } finally {
+        generateBtn.disabled = false;
+      }
+    }
+
+    generateBtn.addEventListener("click", generateAudio);
+    loadInfo().catch((error) => {
+      statusNode.textContent = `Failed to load app info: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
