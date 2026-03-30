@@ -4,6 +4,7 @@ import io
 import os
 import tempfile
 import threading
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
@@ -62,6 +63,7 @@ _cache_guard = threading.Lock()
 _model_cache: dict[ModelSettings, TTSModel] = {}
 _model_locks: dict[ModelSettings, threading.Lock] = {}
 _default_state_cache: dict[ModelSettings, dict] = {}
+_voice_cloning_status_cache: dict[ModelSettings, dict] = {}
 
 
 class FileLikeToQueue:
@@ -128,6 +130,37 @@ def _get_default_state(settings: ModelSettings) -> dict:
     return state
 
 
+def _clone_probe_path() -> Path:
+    probe_path = BASE_DIR / ".voice-clone-probe.wav"
+    if probe_path.exists():
+        return probe_path
+    with wave.open(str(probe_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16_000)
+        wav_file.writeframes(b"\x00\x00" * 16_000)
+    return probe_path
+
+
+def _get_voice_cloning_status(settings: ModelSettings) -> dict:
+    with _cache_guard:
+        cached = _voice_cloning_status_cache.get(settings)
+        if cached is not None:
+            return cached
+
+    model, lock = _get_runtime(settings)
+    try:
+        with lock:
+            model.get_state_for_audio_prompt(_clone_probe_path(), truncate=True)
+        status = {"available": True, "reason": None}
+    except Exception as exc:
+        status = {"available": False, "reason": str(exc)}
+
+    with _cache_guard:
+        _voice_cloning_status_cache[settings] = status
+    return status
+
+
 def _save_upload(upload: UploadFile) -> str:
     return _save_upload_to_dir(upload, None)
 
@@ -147,6 +180,48 @@ def _raise_api_error(exc: Exception) -> None:
     raise exc
 
 
+def _voice_cloning_requested(
+    *,
+    voice_url: str | None,
+    voice_path: str | None,
+    voice_wav: UploadFile | None,
+    voice_wav_path: str | None = None,
+) -> bool:
+    return any(
+        value is not None
+        for value in (
+            _normalize(voice_url),
+            _normalize(voice_path),
+            voice_wav,
+            _normalize(voice_wav_path),
+        )
+    )
+
+
+def _ensure_voice_cloning_available(
+    *,
+    settings: ModelSettings,
+    voice_url: str | None,
+    voice_path: str | None,
+    voice_wav: UploadFile | None,
+    voice_wav_path: str | None = None,
+) -> None:
+    if not _voice_cloning_requested(
+        voice_url=voice_url,
+        voice_path=voice_path,
+        voice_wav=voice_wav,
+        voice_wav_path=voice_wav_path,
+    ):
+        return
+    status = _get_voice_cloning_status(settings)
+    if status["available"]:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=status["reason"] or "Voice cloning is not available on this deployment.",
+    )
+
+
 def _resolve_model_state(
     *,
     settings: ModelSettings,
@@ -164,6 +239,13 @@ def _resolve_model_state(
     voice_path = _normalize(voice_path)
     voice_wav_path = _normalize(voice_wav_path)
     voice_state_path = _normalize(voice_state_path)
+    _ensure_voice_cloning_available(
+        settings=settings,
+        voice_url=voice_url,
+        voice_path=voice_path,
+        voice_wav=voice_wav,
+        voice_wav_path=voice_wav_path,
+    )
     model, lock = _get_runtime(settings)
 
     sources = [
@@ -343,6 +425,33 @@ def _settings_from_payload(payload: dict) -> ModelSettings:
 def _service_info() -> dict:
     settings = ModelSettings()
     state = _get_default_state(settings)
+    voice_cloning = _get_voice_cloning_status(settings)
+    supported_voice_inputs = [
+        "built-in voice id",
+        "uploaded .safetensors voice state",
+    ]
+    if voice_cloning["available"]:
+        supported_voice_inputs[1:1] = [
+            "http:// voice URL",
+            "https:// voice URL",
+            "hf:// voice URL",
+            "trusted local server path",
+            "uploaded audio file for voice cloning",
+        ]
+    features = [
+        "CPU inference",
+        "streaming WAV synthesis",
+        "8 built-in voices",
+        "voice state reuse via safetensors",
+        "versioned microservice endpoints",
+        "async jobs via Redis and RabbitMQ",
+    ]
+    if voice_cloning["available"]:
+        features[3:3] = [
+            "voice cloning from uploaded audio",
+            "custom voices via http/https/hf URLs",
+            "voice-state export for faster repeated synthesis",
+        ]
     return {
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
@@ -351,15 +460,7 @@ def _service_info() -> dict:
         "default_voice": DEFAULT_VOICE,
         "default_config": DEFAULT_CONFIG,
         "built_in_voices": list(PREDEFINED_VOICES.keys()),
-        "supported_voice_inputs": [
-            "built-in voice id",
-            "http:// voice URL",
-            "https:// voice URL",
-            "hf:// voice URL",
-            "trusted local server path",
-            "uploaded audio file for voice cloning",
-            "uploaded .safetensors voice state",
-        ],
+        "supported_voice_inputs": supported_voice_inputs,
         "generation_options": {
             "temperature": DEFAULT_TEMPERATURE,
             "lsd_decode_steps": DEFAULT_LSD_DECODE_STEPS,
@@ -367,17 +468,11 @@ def _service_info() -> dict:
             "eos_threshold": DEFAULT_EOS_THRESHOLD,
             "max_tokens_per_chunk": MAX_TOKEN_PER_CHUNK,
         },
-        "features": [
-            "CPU inference",
-            "streaming WAV synthesis",
-            "8 built-in voices",
-            "voice cloning from uploaded audio",
-            "voice state reuse via safetensors",
-            "custom voices via http/https/hf URLs",
-            "voice-state export for faster repeated synthesis",
-            "versioned microservice endpoints",
-            "async jobs via Redis and RabbitMQ",
-        ],
+        "features": features,
+        "capabilities": {
+            "voice_cloning_available": voice_cloning["available"],
+            "voice_cloning_error": voice_cloning["reason"],
+        },
         "default_voice_state_mb": round(size_of_dict(state) / 1_000_000, 2),
         "docs": {
             "swagger_ui": "/docs",
@@ -534,6 +629,12 @@ async def enqueue_text_to_speech(
         noise_clamp=noise_clamp,
         eos_threshold=eos_threshold,
     )
+    _ensure_voice_cloning_available(
+        settings=settings,
+        voice_url=voice_url,
+        voice_path=voice_path,
+        voice_wav=voice_wav,
+    )
     payload = {
         "text": text,
         "voice": voice,
@@ -594,6 +695,12 @@ async def export_voice(
         )
 
     settings = ModelSettings(config=config)
+    _ensure_voice_cloning_available(
+        settings=settings,
+        voice_url=voice_url,
+        voice_path=voice_path,
+        voice_wav=voice_wav,
+    )
     model, lock = _get_runtime(settings)
 
     if voice_wav is not None:

@@ -128,6 +128,7 @@
           <label for="voiceFile">Voice cloning sample</label>
           <input id="voiceFile" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a">
           <p class="muted">If you upload a file, it overrides the voice selector and URL field for this request.</p>
+          <p id="cloneNotice" class="muted"></p>
         </div>
 
         <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
@@ -174,6 +175,7 @@
     const audioNode = document.getElementById("audio");
     const downloadLink = document.getElementById("downloadLink");
     const jobMetaNode = document.getElementById("jobMeta");
+    let voiceCloningAvailable = false;
     let pollHandle = null;
 
     async function loadInfo() {
@@ -197,6 +199,20 @@
 
       document.getElementById("features").innerHTML = data.features
         .map((feature) => `<li>${feature}</li>`).join("");
+
+      voiceCloningAvailable = Boolean(data.capabilities?.voice_cloning_available);
+      const cloningError = data.capabilities?.voice_cloning_error;
+      const heroText = voiceCloningAvailable
+        ? 'Simple local CPU UI for the upstream <code>pocket-tts</code> package. This deployment supports built-in voices, custom voice URLs, uploaded voice states, and voice cloning from audio.'
+        : 'Simple local CPU UI for the upstream <code>pocket-tts</code> package. This deployment currently supports built-in voices and queued generation; gated voice-cloning weights are not configured here.';
+      document.querySelector(".hero .muted").innerHTML = heroText;
+      voiceUrlInput.disabled = !voiceCloningAvailable;
+      voiceFileInput.disabled = !voiceCloningAvailable;
+      voiceUrlInput.placeholder = voiceCloningAvailable ? "hf://... or https://..." : "Voice cloning unavailable on this deployment";
+      const cloneNotice = document.getElementById("cloneNotice");
+      cloneNotice.textContent = voiceCloningAvailable
+        ? "Upload audio or set a voice URL only when you need custom voice cloning."
+        : (cloningError || "Voice cloning is unavailable on this deployment.");
     }
 
     async function generateAudio() {
@@ -214,7 +230,7 @@
       if (file) {
         formData.append("voice_wav", file);
       } else if (voiceUrl) {
-        formData.append("voice", voiceUrl);
+        formData.append("voice_url", voiceUrl);
       } else {
         formData.append("voice", voiceSelect.value);
       }
@@ -276,7 +292,7 @@
       if (file) {
         formData.append("voice_wav", file);
       } else if (voiceUrl) {
-        formData.append("voice", voiceUrl);
+        formData.append("voice_url", voiceUrl);
       } else {
         formData.append("voice", voiceSelect.value);
       }
