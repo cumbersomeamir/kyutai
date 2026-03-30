@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import threading
+import uuid
 import wave
+from datetime import UTC, datetime
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from queue import Queue
 
@@ -36,9 +40,11 @@ DEFAULT_VOICE = "alba"
 DEFAULT_CONFIG = DEFAULT_VARIANT
 QUEUE_UPLOAD_DIR = BASE_DIR / "tts_uploads"
 JOB_AUDIO_DIR = BASE_DIR / "tts_jobs"
+SAVED_VOICE_DIR = BASE_DIR / "tts_saved_voices"
 
 QUEUE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 JOB_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+SAVED_VOICE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Kyutai Pocket TTS Microservice", version=SERVICE_VERSION)
 app.add_middleware(
@@ -170,6 +176,84 @@ def _save_upload_to_dir(upload: UploadFile, directory: Path | None) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=directory) as temp_file:
         temp_file.write(upload.file.read())
         return temp_file.name
+
+
+def _saved_voice_state_path(voice_id: str) -> Path:
+    return SAVED_VOICE_DIR / f"{voice_id}.safetensors"
+
+
+def _saved_voice_meta_path(voice_id: str) -> Path:
+    return SAVED_VOICE_DIR / f"{voice_id}.json"
+
+
+def _write_saved_voice_metadata(metadata: dict) -> None:
+    _saved_voice_meta_path(metadata["voice_id"]).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _get_saved_voice_metadata(voice_id: str) -> dict | None:
+    meta_path = _saved_voice_meta_path(voice_id)
+    state_path = _saved_voice_state_path(voice_id)
+    if not meta_path.exists() or not state_path.exists():
+        return None
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["state_filename"] = state_path.name
+    return metadata
+
+
+def _list_saved_voices() -> list[dict]:
+    voices: list[dict] = []
+    for meta_path in sorted(
+        SAVED_VOICE_DIR.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    ):
+        metadata = _get_saved_voice_metadata(meta_path.stem)
+        if metadata is not None:
+            voices.append(metadata)
+    return voices
+
+
+def _create_saved_voice(
+    *,
+    settings: ModelSettings,
+    name: str,
+    voice_wav: UploadFile,
+    truncate_voice_prompt: bool,
+) -> dict:
+    _ensure_voice_cloning_available(
+        settings=settings,
+        voice_url=None,
+        voice_path=None,
+        voice_wav=voice_wav,
+    )
+    temp_path = _save_upload(voice_wav)
+    sample_bytes = Path(temp_path).read_bytes()
+    voice_id = f"vc_{uuid.uuid4().hex[:16]}"
+    state_path = _saved_voice_state_path(voice_id)
+    model, lock = _get_runtime(settings)
+    try:
+        with lock:
+            model_state = model.get_state_for_audio_prompt(
+                Path(temp_path),
+                truncate=truncate_voice_prompt,
+            )
+        export_model_state(model_state, str(state_path))
+        metadata = {
+            "voice_id": voice_id,
+            "name": name,
+            "created_at": datetime.now(UTC).isoformat(),
+            "sample_filename": voice_wav.filename or "upload.wav",
+            "sample_sha256": sha256(sample_bytes).hexdigest(),
+            "source": "uploaded_audio",
+        }
+        _write_saved_voice_metadata(metadata)
+        return metadata
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 def _raise_api_error(exc: Exception) -> None:
@@ -321,11 +405,23 @@ def _resolve_model_state(
             _raise_api_error(exc)
 
     if voice and voice != DEFAULT_VOICE:
-        try:
-            with lock:
-                return model.get_state_for_audio_prompt(voice, truncate=False)
-        except Exception as exc:
-            _raise_api_error(exc)
+        if voice in PREDEFINED_VOICES:
+            try:
+                with lock:
+                    return model.get_state_for_audio_prompt(voice, truncate=False)
+            except Exception as exc:
+                _raise_api_error(exc)
+        saved_voice = _get_saved_voice_metadata(voice)
+        if saved_voice is not None:
+            try:
+                with lock:
+                    return model.get_state_for_audio_prompt(
+                        _saved_voice_state_path(voice),
+                        truncate=False,
+                    )
+            except Exception as exc:
+                _raise_api_error(exc)
+        raise HTTPException(status_code=404, detail=f"Unknown voice id: {voice}")
 
     return _get_default_state(settings)
 
@@ -449,6 +545,7 @@ def _service_info() -> dict:
     if voice_cloning["available"]:
         features[3:3] = [
             "voice cloning from uploaded audio",
+            "persistent saved clone voices with generated ids",
             "custom voices via http/https/hf URLs",
             "voice-state export for faster repeated synthesis",
         ]
@@ -469,6 +566,9 @@ def _service_info() -> dict:
         "GET /docs": "interactive API docs",
     }
     if voice_cloning["available"]:
+        endpoints[f"POST {API_PREFIX}/voices/clone"] = "create and save a cloned voice id from uploaded audio"
+        endpoints[f"GET {API_PREFIX}/voices/{{voice_id}}"] = "saved voice metadata"
+        endpoints[f"DELETE {API_PREFIX}/voices/{{voice_id}}"] = "delete a saved cloned voice"
         endpoints[f"POST {API_PREFIX}/export-voice"] = "export a voice state as .safetensors"
     return {
         "service": SERVICE_NAME,
@@ -478,6 +578,7 @@ def _service_info() -> dict:
         "default_voice": DEFAULT_VOICE,
         "default_config": DEFAULT_CONFIG,
         "built_in_voices": list(PREDEFINED_VOICES.keys()),
+        "saved_voice_count": len(_list_saved_voices()),
         "supported_voice_inputs": supported_voice_inputs,
         "generation_options": {
             "temperature": DEFAULT_TEMPERATURE,
@@ -525,13 +626,59 @@ async def info():
 
 @app.get(f"{API_PREFIX}/voices")
 async def voices():
+    voice_cloning = _get_voice_cloning_status(ModelSettings())
     return {
         "default_voice": DEFAULT_VOICE,
         "voices": [
             {"id": name, "source": PREDEFINED_VOICES[name]}
             for name in PREDEFINED_VOICES
         ],
+        "saved_voices": _list_saved_voices(),
+        "voice_cloning_available": voice_cloning["available"],
     }
+
+
+@app.post(f"{API_PREFIX}/voices/clone")
+async def clone_voice(
+    name: str = Form(...),
+    config: str = Form(DEFAULT_CONFIG),
+    truncate_voice_prompt: bool = Form(True),
+    voice_wav: UploadFile = File(...),
+):
+    name = _normalize(name)
+    if name is None:
+        raise HTTPException(status_code=400, detail="Voice name cannot be empty.")
+    settings = ModelSettings(config=config)
+    metadata = _create_saved_voice(
+        settings=settings,
+        name=name,
+        voice_wav=voice_wav,
+        truncate_voice_prompt=truncate_voice_prompt,
+    )
+    return {
+        "status": "saved",
+        "service": SERVICE_NAME,
+        "voice": metadata,
+    }
+
+
+@app.get(f"{API_PREFIX}/voices/{{voice_id}}")
+async def get_saved_voice(voice_id: str):
+    metadata = _get_saved_voice_metadata(voice_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="Saved voice not found.")
+    return metadata
+
+
+@app.delete(f"{API_PREFIX}/voices/{{voice_id}}")
+async def delete_saved_voice(voice_id: str):
+    metadata = _get_saved_voice_metadata(voice_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="Saved voice not found.")
+    for path in (_saved_voice_meta_path(voice_id), _saved_voice_state_path(voice_id)):
+        if path.exists():
+            path.unlink()
+    return {"status": "deleted", "voice_id": voice_id}
 
 
 @app.get(f"{API_PREFIX}/models")

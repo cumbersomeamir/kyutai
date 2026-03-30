@@ -57,6 +57,9 @@ Pocket TTS:
 - `GET /api/v1/health`
 - `GET /api/v1/info`
 - `GET /api/v1/voices`
+- `POST /api/v1/voices/clone`
+- `GET /api/v1/voices/{voice_id}`
+- `DELETE /api/v1/voices/{voice_id}`
 - `GET /api/v1/models`
 - `GET /api/v1/endpoints`
 - `POST /api/v1/tts`
@@ -93,5 +96,6 @@ Qwen3-VL:
 - Qwen uses the official GGUF files under `qwen_vl_service/models/`.
 - Qwen is served through local `llama-server` on internal port `8795`.
 - Pocket TTS sync endpoints are unchanged; queued endpoints were added alongside them.
+- When gated Kyutai clone weights are available, Pocket TTS can save uploaded audio as persistent cloned voice ids under `tts_saved_voices/`.
 - On non-macOS hosts, set `WHISPER_MODEL_ROOT` to the folder that contains `small.en.pt`.
 - On non-macOS hosts, install `llama-server` on `PATH` or set `LLAMA_SERVER_BINARY`.

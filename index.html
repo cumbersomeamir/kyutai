@@ -115,9 +115,9 @@
 
         <div class="row">
           <div>
-            <label for="voice">Built-in or custom voice</label>
-            <select id="voice"></select>
-          </div>
+          <label for="voice">Built-in or saved voice</label>
+          <select id="voice"></select>
+        </div>
           <div>
             <label for="voiceUrl">Custom voice URL override</label>
             <input id="voiceUrl" type="text" placeholder="hf://... or https://...">
@@ -129,6 +129,15 @@
           <input id="voiceFile" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a">
           <p class="muted">If you upload a file, it overrides the voice selector and URL field for this request.</p>
           <p id="cloneNotice" class="muted"></p>
+        </div>
+
+        <div style="margin-top:12px">
+          <label for="cloneName">Save cloned voice</label>
+          <div class="row">
+            <input id="cloneName" type="text" placeholder="Friendly voice name">
+            <button id="saveCloneBtn" type="button">Save voice id</button>
+          </div>
+          <p id="cloneStatus" class="status"></p>
         </div>
 
         <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
@@ -153,6 +162,11 @@
         </section>
 
         <section class="panel">
+          <h3>Saved Voices</h3>
+          <ul id="savedVoices"></ul>
+        </section>
+
+        <section class="panel">
           <h3>Endpoints</h3>
           <ul id="endpoints"></ul>
         </section>
@@ -171,28 +185,53 @@
     const voiceFileInput = document.getElementById("voiceFile");
     const generateBtn = document.getElementById("generateBtn");
     const queueBtn = document.getElementById("queueBtn");
+    const saveCloneBtn = document.getElementById("saveCloneBtn");
     const statusNode = document.getElementById("status");
+    const cloneStatusNode = document.getElementById("cloneStatus");
     const audioNode = document.getElementById("audio");
     const downloadLink = document.getElementById("downloadLink");
     const jobMetaNode = document.getElementById("jobMeta");
     let voiceCloningAvailable = false;
     let pollHandle = null;
 
+    async function loadVoices(defaultVoice) {
+      const res = await fetch("/api/v1/voices");
+      const data = await res.json();
+      voiceSelect.innerHTML = "";
+
+      const builtInGroup = document.createElement("optgroup");
+      builtInGroup.label = "Built-in";
+      for (const voice of data.voices) {
+        const option = document.createElement("option");
+        option.value = voice.id;
+        option.textContent = voice.id;
+        if (voice.id === defaultVoice) option.selected = true;
+        builtInGroup.appendChild(option);
+      }
+      voiceSelect.appendChild(builtInGroup);
+
+      if (data.saved_voices.length) {
+        const savedGroup = document.createElement("optgroup");
+        savedGroup.label = "Saved";
+        for (const voice of data.saved_voices) {
+          const option = document.createElement("option");
+          option.value = voice.voice_id;
+          option.textContent = `${voice.name} (${voice.voice_id})`;
+          savedGroup.appendChild(option);
+        }
+        voiceSelect.appendChild(savedGroup);
+      }
+
+      document.getElementById("voices").innerHTML = data.voices
+        .map((voice) => `<span class="chip">${voice.id}</span>`).join("");
+      document.getElementById("savedVoices").innerHTML = data.saved_voices.length
+        ? data.saved_voices.map((voice) => `<li><code>${voice.voice_id}</code> ${voice.name}</li>`).join("")
+        : "<li class=\"muted\">No saved cloned voices yet.</li>";
+    }
+
     async function loadInfo() {
       const res = await fetch("/api/v1/info");
       const data = await res.json();
-
-      voiceSelect.innerHTML = "";
-      for (const voice of data.built_in_voices) {
-        const option = document.createElement("option");
-        option.value = voice;
-        option.textContent = voice;
-        if (voice === data.default_voice) option.selected = true;
-        voiceSelect.appendChild(option);
-      }
-
-      document.getElementById("voices").innerHTML = data.built_in_voices
-        .map((voice) => `<span class="chip">${voice}</span>`).join("");
 
       document.getElementById("endpoints").innerHTML = Object.entries(data.endpoints)
         .map(([path, desc]) => `<li><code>${path}</code> ${desc}</li>`).join("");
@@ -208,11 +247,47 @@
       document.querySelector(".hero .muted").innerHTML = heroText;
       voiceUrlInput.disabled = !voiceCloningAvailable;
       voiceFileInput.disabled = !voiceCloningAvailable;
+      saveCloneBtn.disabled = !voiceCloningAvailable;
       voiceUrlInput.placeholder = voiceCloningAvailable ? "hf://... or https://..." : "Voice cloning unavailable on this deployment";
       const cloneNotice = document.getElementById("cloneNotice");
       cloneNotice.textContent = voiceCloningAvailable
         ? "Upload audio or set a voice URL only when you need custom voice cloning."
         : "Voice cloning is disabled on this deployment because the gated Kyutai clone weights are not installed on this VM.";
+      await loadVoices(data.default_voice);
+    }
+
+    async function saveClone() {
+      const file = voiceFileInput.files[0];
+      const name = document.getElementById("cloneName").value.trim();
+      if (!file) {
+        cloneStatusNode.textContent = "Choose an audio file first.";
+        return;
+      }
+      if (!name) {
+        cloneStatusNode.textContent = "Enter a voice name first.";
+        return;
+      }
+
+      cloneStatusNode.textContent = "Saving voice clone...";
+      saveCloneBtn.disabled = true;
+      const formData = new FormData();
+      formData.append("name", name);
+      formData.append("voice_wav", file);
+
+      try {
+        const res = await fetch("/api/v1/voices/clone", { method: "POST", body: formData });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Clone save failed");
+        }
+        cloneStatusNode.textContent = `Saved ${data.voice.name} as ${data.voice.voice_id}.`;
+        await loadVoices("alba");
+        voiceSelect.value = data.voice.voice_id;
+      } catch (error) {
+        cloneStatusNode.textContent = `Error: ${error.message}`;
+      } finally {
+        saveCloneBtn.disabled = !voiceCloningAvailable;
+      }
     }
 
     async function generateAudio() {
@@ -315,6 +390,7 @@
 
     generateBtn.addEventListener("click", generateAudio);
     queueBtn.addEventListener("click", queueAudio);
+    saveCloneBtn.addEventListener("click", saveClone);
     loadInfo().catch((error) => {
       statusNode.textContent = `Failed to load app info: ${error.message}`;
     });
