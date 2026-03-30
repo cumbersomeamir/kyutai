@@ -452,6 +452,24 @@ def _service_info() -> dict:
             "custom voices via http/https/hf URLs",
             "voice-state export for faster repeated synthesis",
         ]
+    endpoints = {
+        "GET /": "simple local UI",
+        "GET /health": "legacy health alias",
+        f"GET {API_PREFIX}/health": "microservice health",
+        "GET /api/info": "legacy service metadata alias",
+        f"GET {API_PREFIX}/info": "service metadata and defaults",
+        f"GET {API_PREFIX}/voices": "built-in voices and voice references",
+        f"GET {API_PREFIX}/models": "model configuration defaults",
+        f"GET {API_PREFIX}/endpoints": "machine-readable endpoint catalog",
+        "POST /tts": "legacy streaming synthesis alias",
+        f"POST {API_PREFIX}/tts": "stream generated WAV audio",
+        f"POST {API_PREFIX}/jobs/tts": "enqueue generated WAV audio",
+        f"GET {API_PREFIX}/jobs/{{job_id}}": "job status and result metadata",
+        f"GET {API_PREFIX}/jobs/{{job_id}}/audio": "download completed queued audio",
+        "GET /docs": "interactive API docs",
+    }
+    if voice_cloning["available"]:
+        endpoints[f"POST {API_PREFIX}/export-voice"] = "export a voice state as .safetensors"
     return {
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
@@ -478,23 +496,7 @@ def _service_info() -> dict:
             "swagger_ui": "/docs",
             "openapi_json": "/openapi.json",
         },
-        "endpoints": {
-            "GET /": "simple local UI",
-            "GET /health": "legacy health alias",
-            f"GET {API_PREFIX}/health": "microservice health",
-            "GET /api/info": "legacy service metadata alias",
-            f"GET {API_PREFIX}/info": "service metadata and defaults",
-            f"GET {API_PREFIX}/voices": "built-in voices and voice references",
-            f"GET {API_PREFIX}/models": "model configuration defaults",
-            f"GET {API_PREFIX}/endpoints": "machine-readable endpoint catalog",
-            "POST /tts": "legacy streaming synthesis alias",
-            f"POST {API_PREFIX}/tts": "stream generated WAV audio",
-            f"POST {API_PREFIX}/jobs/tts": "enqueue generated WAV audio",
-            f"GET {API_PREFIX}/jobs/{{job_id}}": "job status and result metadata",
-            f"GET {API_PREFIX}/jobs/{{job_id}}/audio": "download completed queued audio",
-            f"POST {API_PREFIX}/export-voice": "export a voice state as .safetensors",
-            "GET /docs": "interactive API docs",
-        },
+        "endpoints": endpoints,
     }
 
 

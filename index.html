@@ -212,7 +212,7 @@
       const cloneNotice = document.getElementById("cloneNotice");
       cloneNotice.textContent = voiceCloningAvailable
         ? "Upload audio or set a voice URL only when you need custom voice cloning."
-        : (cloningError || "Voice cloning is unavailable on this deployment.");
+        : "Voice cloning is disabled on this deployment because the gated Kyutai clone weights are not installed on this VM.";
     }
 
     async function generateAudio() {
