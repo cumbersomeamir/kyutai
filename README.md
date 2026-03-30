@@ -13,6 +13,7 @@ Three local microservices now live in this repo, each with its own HTML page, ve
 - Redis for job state
 - RabbitMQ for durable job delivery
 - Live polling in each HTML page for queued job status
+- `queue_system/*.sh` supports Homebrew on macOS and `systemctl` on Linux
 
 Start infra:
 
