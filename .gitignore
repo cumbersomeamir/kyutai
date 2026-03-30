@@ -3,3 +3,14 @@ __pycache__/
 *.pyc
 sample.wav
 ui_test.wav
+api_v1_test.wav
+exported_voice_state.safetensors
+tts_jobs/
+tts_uploads/
+qwen_vl_service/models/
+qwen_vl_service/tmp/
+qwen_vl_service/logs/
+qwen_vl_service/uploads/
+whisper_service/tmp/
+whisper_service/logs/
+whisper_service/uploads/

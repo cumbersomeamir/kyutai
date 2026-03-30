@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whisper Small STT</title>
+  <style>
+    :root {
+      --bg: #eef3f1;
+      --panel: #fbfffd;
+      --line: #bfd1ca;
+      --text: #17211d;
+      --muted: #62726c;
+      --accent: #215f53;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Georgia, serif; background: linear-gradient(180deg, #f9fcfb 0%, var(--bg) 100%); color: var(--text); }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 40px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: 0 10px 30px rgba(21, 61, 53, .06); }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1.35fr .95fr; }
+    .stack { display: grid; gap: 16px; }
+    .row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+    label { display: block; margin-bottom: 6px; font-size: 14px; color: var(--muted); }
+    input, textarea, button { font: inherit; }
+    input[type="text"], input[type="number"], input[type="url"], input[type="file"], textarea {
+      width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fff;
+    }
+    textarea { min-height: 100px; resize: vertical; }
+    button { border: 0; border-radius: 999px; padding: 12px 16px; background: var(--accent); color: white; cursor: pointer; }
+    button:disabled { opacity: .65; cursor: wait; }
+    .muted { color: var(--muted); font-size: 14px; }
+    pre { white-space: pre-wrap; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-height: 120px; }
+    code { background: rgba(33,95,83,.09); padding: 2px 6px; border-radius: 6px; }
+    ul { margin: 0; padding-left: 18px; }
+    @media (max-width: 760px) { .grid, .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel" style="margin-bottom:16px">
+      <h1>Whisper Small</h1>
+      <p class="muted">CPU speech-to-text microservice with direct APIs plus queued job execution. Use either an uploaded media file or a source URL clip.</p>
+    </section>
+    <div class="grid">
+      <section class="panel">
+        <h2>Transcribe</h2>
+        <div class="row">
+          <div>
+            <label for="media">Upload media</label>
+            <input id="media" type="file" accept="audio/*,video/*">
+          </div>
+          <div>
+            <label for="sourceUrl">Or source URL</label>
+            <input id="sourceUrl" type="url" placeholder="https://...">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div>
+            <label for="clipStart">Clip start (URL mode)</label>
+            <input id="clipStart" type="number" value="0" min="0" step="0.1">
+          </div>
+          <div>
+            <label for="clipDuration">Clip duration (URL mode)</label>
+            <input id="clipDuration" type="number" value="5" min="0.1" step="0.1">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div>
+            <label for="language">Language</label>
+            <input id="language" type="text" value="en">
+          </div>
+          <div>
+            <label for="clipLabel">Clip label</label>
+            <input id="clipLabel" type="text" placeholder="optional">
+          </div>
+        </div>
+        <div style="margin-top:16px; display:flex; gap:12px; flex-wrap:wrap;">
+          <button id="submitBtn">Queue transcription</button>
+        </div>
+        <p id="status" class="muted" style="margin-top:12px;"></p>
+      </section>
+      <div class="stack">
+        <section class="panel">
+          <h3>Job</h3>
+          <p class="muted" id="jobMeta">No job submitted yet.</p>
+        </section>
+        <section class="panel">
+          <h3>Transcript</h3>
+          <pre id="transcript">Waiting for transcription.</pre>
+        </section>
+        <section class="panel">
+          <h3>Endpoints</h3>
+          <ul id="endpoints"></ul>
+        </section>
+        <section class="panel">
+          <h3>Features</h3>
+          <ul id="features"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script>
+    const submitBtn = document.getElementById("submitBtn");
+    const statusNode = document.getElementById("status");
+    const transcriptNode = document.getElementById("transcript");
+    const jobMetaNode = document.getElementById("jobMeta");
+    const endpointsNode = document.getElementById("endpoints");
+    const featuresNode = document.getElementById("features");
+    let pollHandle = null;
+
+    async function loadInfo() {
+      const res = await fetch("/api/v1/info");
+      const data = await res.json();
+      endpointsNode.innerHTML = Object.entries(data.endpoints)
+        .map(([path, desc]) => `<li><code>${path}</code> ${desc}</li>`).join("");
+      featuresNode.innerHTML = data.features
+        .map((feature) => `<li>${feature}</li>`).join("");
+    }
+
+    async function pollJob(jobId) {
+      if (pollHandle) clearInterval(pollHandle);
+      pollHandle = setInterval(async () => {
+        const res = await fetch(`/api/v1/jobs/${jobId}`);
+        const data = await res.json();
+        jobMetaNode.textContent = `Job ${data.job_id} | ${data.status} | ${data.progress || 0}% | ${data.message || ""}`;
+        if (data.status === "completed") {
+          clearInterval(pollHandle);
+          transcriptNode.textContent = data.result?.transcript || JSON.stringify(data.result, null, 2);
+          statusNode.textContent = "Completed.";
+        } else if (data.status === "failed") {
+          clearInterval(pollHandle);
+          transcriptNode.textContent = JSON.stringify(data.error, null, 2);
+          statusNode.textContent = "Failed.";
+        }
+      }, 1000);
+    }
+
+    submitBtn.addEventListener("click", async () => {
+      submitBtn.disabled = true;
+      statusNode.textContent = "Submitting job...";
+      transcriptNode.textContent = "Waiting for worker output.";
+      try {
+        const media = document.getElementById("media").files[0];
+        const sourceUrl = document.getElementById("sourceUrl").value.trim();
+        let res;
+        if (media) {
+          const form = new FormData();
+          form.append("media", media);
+          form.append("language", document.getElementById("language").value.trim() || "en");
+          form.append("clip_label", document.getElementById("clipLabel").value.trim());
+          res = await fetch("/api/v1/jobs/transcribe-file", { method: "POST", body: form });
+        } else if (sourceUrl) {
+          res = await fetch("/api/v1/jobs/transcribe-url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sourceUrl,
+              clipStart: Number(document.getElementById("clipStart").value || 0),
+              clipDuration: Number(document.getElementById("clipDuration").value || 5),
+              language: document.getElementById("language").value.trim() || "en",
+              clipLabel: document.getElementById("clipLabel").value.trim(),
+            }),
+          });
+        } else {
+          throw new Error("Provide either an upload or a source URL.");
+        }
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
+        statusNode.textContent = "Queued.";
+        await pollJob(data.job_id);
+      } catch (error) {
+        statusNode.textContent = `Error: ${error.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    loadInfo().catch((error) => {
+      statusNode.textContent = `Failed to load app info: ${error.message}`;
+    });
+  </script>
+</body>
+</html>

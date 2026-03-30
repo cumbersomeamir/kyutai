@@ -104,7 +104,7 @@
   <div class="wrap">
     <section class="hero">
       <h1>Kyutai Pocket TTS</h1>
-      <p class="muted">Simple local CPU UI for the upstream <code>pocket-tts</code> package. Built-in voices, custom voice URLs, and voice cloning from an uploaded sample are supported.</p>
+      <p class="muted">Simple local CPU UI for the upstream <code>pocket-tts</code> package. This now sits on top of the versioned microservice API and supports built-in voices, custom voice URLs, uploaded voice states, and voice cloning from audio.</p>
     </section>
 
     <div class="grid">
@@ -132,6 +132,7 @@
 
         <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
           <button id="generateBtn">Generate audio</button>
+          <button id="queueBtn" type="button">Queue audio</button>
           <a id="downloadLink" class="muted" hidden download="generated_speech.wav">Download result</a>
         </div>
 
@@ -140,6 +141,11 @@
       </section>
 
       <div class="stack">
+        <section class="panel">
+          <h3>Job</h3>
+          <p id="jobMeta" class="muted">No queued job submitted yet.</p>
+        </section>
+
         <section class="panel">
           <h3>Voices</h3>
           <div id="voices" class="chips"></div>
@@ -163,12 +169,15 @@
     const voiceUrlInput = document.getElementById("voiceUrl");
     const voiceFileInput = document.getElementById("voiceFile");
     const generateBtn = document.getElementById("generateBtn");
+    const queueBtn = document.getElementById("queueBtn");
     const statusNode = document.getElementById("status");
     const audioNode = document.getElementById("audio");
     const downloadLink = document.getElementById("downloadLink");
+    const jobMetaNode = document.getElementById("jobMeta");
+    let pollHandle = null;
 
     async function loadInfo() {
-      const res = await fetch("/api/info");
+      const res = await fetch("/api/v1/info");
       const data = await res.json();
 
       voiceSelect.innerHTML = "";
@@ -193,6 +202,7 @@
     async function generateAudio() {
       statusNode.textContent = "Generating...";
       generateBtn.disabled = true;
+      queueBtn.disabled = true;
       audioNode.hidden = true;
       downloadLink.hidden = true;
 
@@ -210,7 +220,7 @@
       }
 
       try {
-        const res = await fetch("/tts", { method: "POST", body: formData });
+        const res = await fetch("/api/v1/tts", { method: "POST", body: formData });
         if (!res.ok) {
           const detail = await res.text();
           throw new Error(detail || "Request failed");
@@ -226,10 +236,69 @@
         statusNode.textContent = `Error: ${error.message}`;
       } finally {
         generateBtn.disabled = false;
+        queueBtn.disabled = false;
+      }
+    }
+
+    async function pollJob(jobId) {
+      if (pollHandle) clearInterval(pollHandle);
+      pollHandle = setInterval(async () => {
+        const res = await fetch(`/api/v1/jobs/${jobId}`);
+        const data = await res.json();
+        jobMetaNode.textContent = `Job ${data.job_id} | ${data.status} | ${data.progress || 0}% | ${data.message || ""}`;
+        if (data.status === "completed") {
+          clearInterval(pollHandle);
+          const url = `/api/v1/jobs/${jobId}/audio`;
+          audioNode.src = `${url}?t=${Date.now()}`;
+          audioNode.hidden = false;
+          downloadLink.href = url;
+          downloadLink.hidden = false;
+          statusNode.textContent = "Queued job completed.";
+        } else if (data.status === "failed") {
+          clearInterval(pollHandle);
+          statusNode.textContent = `Queued job failed: ${data.error?.message || "unknown error"}`;
+        }
+      }, 1000);
+    }
+
+    async function queueAudio() {
+      statusNode.textContent = "Queueing...";
+      generateBtn.disabled = true;
+      queueBtn.disabled = true;
+      audioNode.hidden = true;
+      downloadLink.hidden = true;
+
+      const formData = new FormData();
+      formData.append("text", document.getElementById("text").value);
+
+      const file = voiceFileInput.files[0];
+      const voiceUrl = voiceUrlInput.value.trim();
+      if (file) {
+        formData.append("voice_wav", file);
+      } else if (voiceUrl) {
+        formData.append("voice", voiceUrl);
+      } else {
+        formData.append("voice", voiceSelect.value);
+      }
+
+      try {
+        const res = await fetch("/api/v1/jobs/tts", { method: "POST", body: formData });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || data.error || "Queue request failed");
+        }
+        statusNode.textContent = "Queued.";
+        pollJob(data.job_id);
+      } catch (error) {
+        statusNode.textContent = `Error: ${error.message}`;
+      } finally {
+        generateBtn.disabled = false;
+        queueBtn.disabled = false;
       }
     }
 
     generateBtn.addEventListener("click", generateAudio);
+    queueBtn.addEventListener("click", queueAudio);
     loadInfo().catch((error) => {
       statusNode.textContent = `Failed to load app info: ${error.message}`;
     });

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3-VL 2B</title>
+  <style>
+    :root {
+      --bg: #f2eee8;
+      --panel: #fffaf4;
+      --line: #d3c1ad;
+      --text: #201910;
+      --muted: #6d6256;
+      --accent: #8b4c20;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Georgia, serif; background: linear-gradient(180deg, #f9f5ee 0%, var(--bg) 100%); color: var(--text); }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 40px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: 0 10px 30px rgba(65, 35, 13, .06); }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1.35fr .95fr; }
+    .stack { display: grid; gap: 16px; }
+    .row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+    label { display: block; margin-bottom: 6px; font-size: 14px; color: var(--muted); }
+    input, textarea, button { font: inherit; }
+    input[type="text"], input[type="number"], input[type="url"], input[type="file"], textarea {
+      width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fff;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    button { border: 0; border-radius: 999px; padding: 12px 16px; background: var(--accent); color: white; cursor: pointer; }
+    button:disabled { opacity: .65; cursor: wait; }
+    .muted { color: var(--muted); font-size: 14px; }
+    pre { white-space: pre-wrap; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-height: 140px; }
+    ul { margin: 0; padding-left: 18px; }
+    @media (max-width: 760px) { .grid, .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel" style="margin-bottom:16px">
+      <h1>Qwen3-VL-2B-Instruct</h1>
+      <p class="muted">Simple image-to-text UI over the official GGUF model. Requests are queued and the page polls live job status.</p>
+    </section>
+    <div class="grid">
+      <section class="panel">
+        <h2>Image To Text</h2>
+        <div class="row">
+          <div>
+            <label for="imageFile">Upload image</label>
+            <input id="imageFile" type="file" accept="image/*">
+          </div>
+          <div>
+            <label for="imageUrl">Or image URL</label>
+            <input id="imageUrl" type="url" placeholder="https://...">
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt">Describe this image clearly and concisely.</textarea>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div>
+            <label for="maxTokens">Max tokens</label>
+            <input id="maxTokens" type="number" value="256" min="32" max="1024">
+          </div>
+          <div>
+            <label for="temperature">Temperature</label>
+            <input id="temperature" type="number" value="0.2" min="0" max="2" step="0.1">
+          </div>
+        </div>
+        <div style="margin-top:16px;">
+          <button id="submitBtn">Queue image to text</button>
+        </div>
+        <p id="status" class="muted" style="margin-top:12px;"></p>
+      </section>
+      <div class="stack">
+        <section class="panel">
+          <h3>Job</h3>
+          <p class="muted" id="jobMeta">No job submitted yet.</p>
+        </section>
+        <section class="panel">
+          <h3>Result</h3>
+          <pre id="resultText">Waiting for model output.</pre>
+        </section>
+        <section class="panel">
+          <h3>Endpoints</h3>
+          <ul id="endpoints"></ul>
+        </section>
+        <section class="panel">
+          <h3>Features</h3>
+          <ul id="features"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script>
+    const submitBtn = document.getElementById("submitBtn");
+    const statusNode = document.getElementById("status");
+    const resultNode = document.getElementById("resultText");
+    const jobMetaNode = document.getElementById("jobMeta");
+    const endpointsNode = document.getElementById("endpoints");
+    const featuresNode = document.getElementById("features");
+    let pollHandle = null;
+
+    async function loadInfo() {
+      const res = await fetch("/api/v1/info");
+      const data = await res.json();
+      endpointsNode.innerHTML = Object.entries(data.endpoints)
+        .map(([path, desc]) => `<li><code>${path}</code> ${desc}</li>`).join("");
+      featuresNode.innerHTML = data.features
+        .map((feature) => `<li>${feature}</li>`).join("");
+    }
+
+    async function pollJob(jobId) {
+      if (pollHandle) clearInterval(pollHandle);
+      pollHandle = setInterval(async () => {
+        const res = await fetch(`/api/v1/jobs/${jobId}`);
+        const data = await res.json();
+        jobMetaNode.textContent = `Job ${data.job_id} | ${data.status} | ${data.progress || 0}% | ${data.message || ""}`;
+        if (data.status === "completed") {
+          clearInterval(pollHandle);
+          resultNode.textContent = data.result?.text || JSON.stringify(data.result, null, 2);
+          statusNode.textContent = "Completed.";
+        } else if (data.status === "failed") {
+          clearInterval(pollHandle);
+          resultNode.textContent = JSON.stringify(data.error, null, 2);
+          statusNode.textContent = "Failed.";
+        }
+      }, 1000);
+    }
+
+    submitBtn.addEventListener("click", async () => {
+      submitBtn.disabled = true;
+      statusNode.textContent = "Submitting job...";
+      resultNode.textContent = "Waiting for worker output.";
+      try {
+        const imageFile = document.getElementById("imageFile").files[0];
+        const imageUrl = document.getElementById("imageUrl").value.trim();
+        const form = new FormData();
+        form.append("prompt", document.getElementById("prompt").value.trim() || "Describe this image clearly and concisely.");
+        form.append("max_tokens", document.getElementById("maxTokens").value || "256");
+        form.append("temperature", document.getElementById("temperature").value || "0.2");
+        if (imageFile) {
+          form.append("image_file", imageFile);
+        } else if (imageUrl) {
+          form.append("image_url", imageUrl);
+        } else {
+          throw new Error("Provide either an upload or an image URL.");
+        }
+
+        const res = await fetch("/api/v1/jobs/image-to-text", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
+        statusNode.textContent = "Queued.";
+        await pollJob(data.job_id);
+      } catch (error) {
+        statusNode.textContent = `Error: ${error.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    loadInfo().catch((error) => {
+      statusNode.textContent = `Failed to load app info: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
